@@ -108,21 +108,22 @@ const makeBootstrapInputStream = (fd: number) =>
     try: () => {
       const fdPath = resolveFdPath(fd);
       if (fdPath === undefined) {
-        const stream = new Net.Socket({
-          fd,
-          readable: true,
-          writable: false,
-        });
-        stream.setEncoding("utf8");
-        return stream;
+        return makeDirectBootstrapStream(fd);
       }
 
-      const streamFd = NFS.openSync(fdPath, "r");
-      return NFS.createReadStream("", {
-        fd: streamFd,
-        encoding: "utf8",
-        autoClose: true,
-      });
+      try {
+        const streamFd = NFS.openSync(fdPath, "r");
+        return NFS.createReadStream("", {
+          fd: streamFd,
+          encoding: "utf8",
+          autoClose: true,
+        });
+      } catch (error) {
+        if (isBootstrapFdPathDuplicationError(error)) {
+          return makeDirectBootstrapStream(fd);
+        }
+        throw error;
+      }
     },
     catch: (error) =>
       new BootstrapError({
@@ -130,6 +131,29 @@ const makeBootstrapInputStream = (fd: number) =>
         cause: error,
       }),
   });
+
+const makeDirectBootstrapStream = (fd: number): Readable => {
+  try {
+    return NFS.createReadStream("", {
+      fd,
+      encoding: "utf8",
+      autoClose: true,
+    });
+  } catch {
+    const stream = new Net.Socket({
+      fd,
+      readable: true,
+      writable: false,
+    });
+    stream.setEncoding("utf8");
+    return stream;
+  }
+};
+
+const isBootstrapFdPathDuplicationError = Predicate.compose(
+  Predicate.hasProperty("code"),
+  (_) => _.code === "ENXIO" || _.code === "EINVAL" || _.code === "EPERM",
+);
 
 export function resolveFdPath(
   fd: number,

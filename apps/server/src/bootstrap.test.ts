@@ -8,6 +8,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import { TestClock } from "effect/testing";
+import { vi } from "vitest";
 
 import { readBootstrapEnvelope, resolveFdPath } from "./bootstrap";
 import { assertNone, assertSome } from "@effect/vitest/utils";
@@ -44,6 +45,45 @@ it.layer(NodeServices.layer)("readBootstrapEnvelope", (it) => {
       assertSome(payload, {
         mode: "desktop",
       });
+    }),
+  );
+
+  it.effect("falls back to reading the inherited fd when path duplication fails", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const filePath = yield* fs.makeTempFileScoped({ prefix: "t3-bootstrap-", suffix: ".ndjson" });
+
+      yield* fs.writeFileString(
+        filePath,
+        `${yield* Schema.encodeEffect(Schema.fromJsonString(TestEnvelopeSchema))({
+          mode: "desktop",
+        })}\n`,
+      );
+
+      const fd = yield* Effect.acquireRelease(
+        Effect.sync(() => NFS.openSync(filePath, "r")),
+        (fd) => Effect.sync(() => NFS.closeSync(fd)),
+      );
+
+      const originalOpenSync = NFS.openSync;
+      const openSync = vi.spyOn(NFS, "openSync").mockImplementation((path, flags) => {
+        if (path === "/proc/self/fd/3" && flags === "r") {
+          const error = new Error("no such device or address");
+          Object.assign(error, { code: "ENXIO" });
+          throw error;
+        }
+
+        return originalOpenSync(path, flags);
+      });
+
+      try {
+        const payload = yield* readBootstrapEnvelope(TestEnvelopeSchema, fd, { timeoutMs: 100 });
+        assertSome(payload, {
+          mode: "desktop",
+        });
+      } finally {
+        openSync.mockRestore();
+      }
     }),
   );
 
