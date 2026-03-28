@@ -13,6 +13,24 @@ import { vi } from "vitest";
 import { readBootstrapEnvelope, resolveFdPath } from "./bootstrap";
 import { assertNone, assertSome } from "@effect/vitest/utils";
 
+const openSyncInterceptor = vi.hoisted(() => ({ failPath: null as string | null }));
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    openSync: (...args: Parameters<typeof actual.openSync>) => {
+      const [filePath, flags] = args;
+      if (typeof filePath === "string" && filePath === openSyncInterceptor.failPath && flags === "r") {
+        const error = new Error("no such device or address");
+        Object.assign(error, { code: "ENXIO" });
+        throw error;
+      }
+      return (actual.openSync as (...a: typeof args) => number)(...args);
+    },
+  };
+});
+
 const TestEnvelopeSchema = Schema.Struct({ mode: Schema.String });
 
 it.layer(NodeServices.layer)("readBootstrapEnvelope", (it) => {
@@ -60,29 +78,20 @@ it.layer(NodeServices.layer)("readBootstrapEnvelope", (it) => {
         })}\n`,
       );
 
-      const fd = yield* Effect.acquireRelease(
-        Effect.sync(() => NFS.openSync(filePath, "r")),
-        (fd) => Effect.sync(() => NFS.closeSync(fd)),
-      );
+      // Open without acquireRelease: the direct-stream fallback uses autoClose: true,
+      // so the stream owns the fd lifecycle and closes it asynchronously on end.
+      // Attempting to also close it synchronously in a finalizer races with the
+      // stream's async close and produces an uncaught EBADF.
+      const fd = NFS.openSync(filePath, "r");
 
-      const originalOpenSync = NFS.openSync;
-      const openSync = vi.spyOn(NFS, "openSync").mockImplementation((path, flags) => {
-        if (path === "/proc/self/fd/3" && flags === "r") {
-          const error = new Error("no such device or address");
-          Object.assign(error, { code: "ENXIO" });
-          throw error;
-        }
-
-        return originalOpenSync(path, flags);
-      });
-
+      openSyncInterceptor.failPath = `/proc/self/fd/${fd}`;
       try {
         const payload = yield* readBootstrapEnvelope(TestEnvelopeSchema, fd, { timeoutMs: 100 });
         assertSome(payload, {
           mode: "desktop",
         });
       } finally {
-        openSync.mockRestore();
+        openSyncInterceptor.failPath = null;
       }
     }),
   );

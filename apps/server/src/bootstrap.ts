@@ -111,8 +111,9 @@ const makeBootstrapInputStream = (fd: number) =>
         return makeDirectBootstrapStream(fd);
       }
 
+      let streamFd: number | undefined;
       try {
-        const streamFd = NFS.openSync(fdPath, "r");
+        streamFd = NFS.openSync(fdPath, "r");
         return NFS.createReadStream("", {
           fd: streamFd,
           encoding: "utf8",
@@ -120,6 +121,9 @@ const makeBootstrapInputStream = (fd: number) =>
         });
       } catch (error) {
         if (isBootstrapFdPathDuplicationError(error)) {
+          if (streamFd !== undefined) {
+            NFS.closeSync(streamFd);
+          }
           return makeDirectBootstrapStream(fd);
         }
         throw error;
