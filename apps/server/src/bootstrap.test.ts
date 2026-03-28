@@ -21,7 +21,11 @@ vi.mock("node:fs", async (importOriginal) => {
     ...actual,
     openSync: (...args: Parameters<typeof actual.openSync>) => {
       const [filePath, flags] = args;
-      if (typeof filePath === "string" && filePath === openSyncInterceptor.failPath && flags === "r") {
+      if (
+        typeof filePath === "string" &&
+        filePath === openSyncInterceptor.failPath &&
+        flags === "r"
+      ) {
         const error = new Error("no such device or address");
         Object.assign(error, { code: "ENXIO" });
         throw error;
